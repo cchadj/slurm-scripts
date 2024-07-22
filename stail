@@ -1,0 +1,137 @@
+#!/bin/bash
+
+DEFAULT_LINES=200
+
+show_help() {
+  cat << EOF
+Usage: stail [OPTIONS] JOB_ID
+Tail the StdOut or StdErr file for a given Slurm JOB_ID.
+
+OPTIONS:
+  -n, --lines NUM  Number of lines to display (default: $DEFAULT_LINES).
+  --out            Tail the StdOut file.
+  --err            Tail the StdErr file.
+  --help           Display this help message and exit.
+
+JOB_ID:
+  Provide the Slurm JOB_ID to tail the corresponding log file.
+  You can also use 'last' to refer to the last submitted job.
+
+Examples:
+  stail --out 12345           # Tail the StdOut of job with JOB_ID 12345.
+  stail --err 54321           # Tail the StdErr of job with JOB_ID 54321.
+  stail -n 50 --out 9876      # Tail the last 50 lines of StdOut for job with JOB_ID 9876.
+  stail --out last            # Tail the StdOut of the last submitted job.
+
+Note:
+  If 'last' is used as JOB_ID, it will tail the log of the last submitted job.
+  If JOB_ID is not provided, the script will display this help message.
+
+EOF
+}
+
+# Check if any arguments are provided
+if [ $# -eq 0 ]; then
+  show_help
+  exit 1
+fi
+
+LINES="$DEFAULT_LINES"
+TAIL_OUT=false
+TAIL_ERR=false
+JOB_ID_ARG=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    -n|--lines)
+      LINES="$2"
+      shift 2
+      ;;
+    --out)
+      TAIL_OUT=true
+      shift
+      ;;
+    --err)
+      TAIL_ERR=true
+      shift
+      ;;
+    *)
+      if [[ -z "$JOB_ID_ARG" ]]; then
+        JOB_ID_ARG="$1"
+      else
+        echo "Unexpected argument: $1"
+        show_help
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+# Check if JOB_ID_ARG is provided
+if [[ -z "$JOB_ID_ARG" ]]; then
+  echo "Error: JOB_ID is required."
+  show_help
+  exit 1
+fi
+
+# Default to tail both StdOut and StdErr if neither --out nor --err is specified
+if [[ "$TAIL_OUT" = false && "$TAIL_ERR" = false ]]; then
+  TAIL_OUT=true
+  TAIL_ERR=true
+fi
+
+# Check if the argument is "last"
+if [[ "$JOB_ID_ARG" == "last" ]]; then
+  LAST_JOB_ID=$(squeue -h -o "%i" -u "$USER" -r -t "pending,running" | head -n 1)
+  if [[ -z "$LAST_JOB_ID" ]]; then
+    echo "No previous job found."
+    exit 1
+  else
+    JOB_ID="$LAST_JOB_ID"
+  fi
+else
+  # Check if the argument is a number or contains an underscore
+  if ! [[ "$JOB_ID_ARG" =~ ^[0-9_]+$ ]]; then
+    echo "Invalid JOB_ID. Please provide a valid numeric JOB_ID with or without underscores, or use 'last' to refer to the last job."
+    exit 1
+  fi
+  JOB_ID="$JOB_ID_ARG"
+fi
+
+# Function to get the log file path
+get_log_file() {
+  local job_id="$1"
+  local log_type="$2"
+  scontrol show job "$job_id" | grep "$log_type" | cut -d '=' -f 2
+}
+
+if [[ "$TAIL_OUT" = true ]]; then
+  STDOUT_FILE=$(get_log_file "$JOB_ID" "StdOut")
+  if [[ -z "$STDOUT_FILE" ]]; then
+    echo "Error: Unable to find StdOut file for job $JOB_ID."
+    exit 1
+  fi
+fi
+
+if [[ "$TAIL_ERR" = true ]]; then
+  STDERR_FILE=$(get_log_file "$JOB_ID" "StdErr")
+  if [[ -z "$STDERR_FILE" ]]; then
+    echo "Error: Unable to find StdErr file for job $JOB_ID."
+    exit 1
+  fi
+fi
+
+# Tail the appropriate files
+if [[ "$TAIL_OUT" = true && "$TAIL_ERR" = true ]]; then
+  tail -n "$LINES" -f "$STDOUT_FILE" "$STDERR_FILE"
+elif [[ "$TAIL_OUT" = true ]]; then
+  tail -n "$LINES" -f "$STDOUT_FILE"
+elif [[ "$TAIL_ERR" = true ]]; then
+  tail -n "$LINES" -f "$STDERR_FILE"
+fi
+
